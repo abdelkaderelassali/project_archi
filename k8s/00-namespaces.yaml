@@ -1,0 +1,37 @@
+# Functional isolation per spec: each layer lives in its own namespace.
+# Use NetworkPolicies later to restrict cross-namespace traffic.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: newslake-storage
+  labels: { layer: storage }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: newslake-streaming
+  labels: { layer: streaming }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: newslake-processing
+  labels: { layer: processing }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: newslake-orchestration
+  labels: { layer: orchestration }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: newslake-bi
+  labels: { layer: bi }
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: newslake-monitoring
+  labels: { layer: monitoring }

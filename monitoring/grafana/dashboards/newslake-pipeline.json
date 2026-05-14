@@ -1,0 +1,100 @@
+{
+  "title": "NewsLake — Pipeline Health",
+  "uid": "newslake-pipeline",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["newslake", "bigdata"],
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Articles in warehouse",
+      "datasource": "NewsWarehouse",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        { "format": "table", "rawSql": "SELECT COUNT(*) AS value FROM gold.articles", "refId": "A" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Articles last 1h",
+      "datasource": "NewsWarehouse",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [
+        { "format": "table",
+          "rawSql": "SELECT COUNT(*) AS value FROM gold.articles WHERE published_at >= NOW() - INTERVAL '1 hour'",
+          "refId": "A" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Active sources",
+      "datasource": "NewsWarehouse",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        { "format": "table", "rawSql": "SELECT COUNT(*) AS value FROM gold.articles_per_source", "refId": "A" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Kafka topic raw_articles — messages",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        { "expr": "sum(kafka_topic_partition_current_offset{topic=\"raw_articles\"})", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Kafka — messages per second on raw_articles",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "sum(rate(kafka_topic_partition_current_offset{topic=\"raw_articles\"}[5m]))", "refId": "A", "legendFormat": "msg/s" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Container CPU usage",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        { "expr": "sum by (name) (rate(container_cpu_usage_seconds_total{name=~\"scraper|bronze-silver|kafka|warehouse|minio|airflow.*\"}[2m]))",
+          "refId": "A", "legendFormat": "{{name}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Container memory usage (MB)",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "sum by (name) (container_memory_usage_bytes{name=~\"scraper|bronze-silver|kafka|warehouse|minio|airflow.*\"}) / 1024 / 1024",
+          "refId": "A", "legendFormat": "{{name}}" }
+      ]
+    },
+    {
+      "type": "barchart",
+      "title": "Articles per source",
+      "datasource": "NewsWarehouse",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        { "format": "table",
+          "rawSql": "SELECT source, n_articles FROM gold.articles_per_source ORDER BY n_articles DESC",
+          "refId": "A" }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Top trending keywords (7 days)",
+      "datasource": "NewsWarehouse",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 20 },
+      "targets": [
+        { "format": "table",
+          "rawSql": "SELECT keyword, SUM(n_occurrences) AS occurrences FROM gold.top_keywords WHERE day >= CURRENT_DATE - INTERVAL '7 days' GROUP BY keyword ORDER BY occurrences DESC LIMIT 30",
+          "refId": "A" }
+      ]
+    }
+  ]
+}

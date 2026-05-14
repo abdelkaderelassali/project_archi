@@ -1,0 +1,148 @@
+# =============================================================
+# Layer: STORAGE  (Data Lake + Data Warehouse)
+# Namespace: newslake-storage
+# =============================================================
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-credentials
+  namespace: newslake-storage
+type: Opaque
+stringData:
+  MINIO_ROOT_USER: minio
+  MINIO_ROOT_PASSWORD: minio12345
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: warehouse-credentials
+  namespace: newslake-storage
+type: Opaque
+stringData:
+  POSTGRES_USER: warehouse
+  POSTGRES_PASSWORD: warehouse
+  POSTGRES_DB: warehouse
+---
+# ---------- MinIO ----------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: newslake-storage
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: 20Gi }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  namespace: newslake-storage
+spec:
+  serviceName: minio
+  replicas: 1
+  selector: { matchLabels: { app: minio } }
+  template:
+    metadata: { labels: { app: minio } }
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+          args: ["server", "/data", "--console-address", ":9001"]
+          envFrom:
+            - secretRef: { name: minio-credentials }
+          ports:
+            - { containerPort: 9000, name: s3 }
+            - { containerPort: 9001, name: console }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            httpGet: { path: /minio/health/ready, port: 9000 }
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: minio-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: newslake-storage
+spec:
+  selector: { app: minio }
+  ports:
+    - { name: s3, port: 9000, targetPort: 9000 }
+    - { name: console, port: 9001, targetPort: 9001 }
+---
+# Bucket bootstrap Job (runs once per deploy)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+  namespace: newslake-storage
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/mc:RELEASE.2024-10-08T09-37-26Z
+          envFrom:
+            - secretRef: { name: minio-credentials }
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              until mc alias set local http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; do sleep 3; done
+              mc mb -p local/newslake/bronze || true
+              mc mb -p local/newslake/silver || true
+              mc mb -p local/newslake/gold   || true
+              echo "buckets ready"
+---
+# ---------- Postgres Warehouse ----------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: warehouse-data
+  namespace: newslake-storage
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: 10Gi }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: warehouse
+  namespace: newslake-storage
+spec:
+  serviceName: warehouse
+  replicas: 1
+  selector: { matchLabels: { app: warehouse } }
+  template:
+    metadata: { labels: { app: warehouse } }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          envFrom:
+            - secretRef: { name: warehouse-credentials }
+          ports: [{ containerPort: 5432 }]
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "warehouse"] }
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: warehouse-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: warehouse
+  namespace: newslake-storage
+spec:
+  selector: { app: warehouse }
+  ports: [{ port: 5432, targetPort: 5432 }]

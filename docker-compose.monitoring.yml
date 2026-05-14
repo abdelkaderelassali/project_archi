@@ -1,0 +1,96 @@
+version: "3.9"
+
+# =============================================================
+# Monitoring stack overlay  -  Prometheus + Grafana + exporters
+# Run alongside docker-compose.yml :
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+# =============================================================
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+services:
+
+  # ---------- Prometheus (TSDB) ----------
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+    networks: [newslake]
+
+  # ---------- Grafana (UI) ----------
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on: [prometheus]
+    restart: unless-stopped
+    networks: [newslake]
+
+  # ---------- Exporters ----------
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: node-exporter
+    command:
+      - --path.rootfs=/host
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    restart: unless-stopped
+    networks: [newslake]
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: cadvisor
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    restart: unless-stopped
+    networks: [newslake]
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    container_name: kafka-exporter
+    command:
+      - --kafka.server=kafka:9092
+    depends_on: [kafka]
+    restart: unless-stopped
+    networks: [newslake]
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: postgres-exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://warehouse:warehouse@warehouse:5432/warehouse?sslmode=disable"
+    depends_on: [warehouse]
+    restart: unless-stopped
+    networks: [newslake]
+
+  minio-exporter:
+    # MinIO exposes Prometheus metrics natively at /minio/v2/metrics/cluster
+    # Nothing to deploy — Prometheus scrapes it directly via the minio service.
+    image: alpine:3.20
+    container_name: minio-metrics-note
+    command: ["sh", "-c", "echo 'minio metrics scraped natively' && sleep infinity"]
+    networks: [newslake]

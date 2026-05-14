@@ -1,0 +1,77 @@
+# =============================================================
+# Layer: PROCESSING  (scraper producer + bronze/silver consumer)
+# Namespace: newslake-processing
+# Images expected to be pre-built and pushed:
+#   - REGISTRY/newslake-scraper:latest
+#   - REGISTRY/newslake-transformer:latest
+# =============================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+  namespace: newslake-processing
+data:
+  KAFKA_BOOTSTRAP: "kafka.newslake-streaming.svc.cluster.local:9092"
+  KAFKA_TOPIC_ARTICLES: "raw_articles"
+  MINIO_ENDPOINT: "http://minio.newslake-storage.svc.cluster.local:9000"
+  MINIO_BUCKET: "newslake"
+  WAREHOUSE_HOST: "warehouse.newslake-storage.svc.cluster.local"
+  WAREHOUSE_PORT: "5432"
+  WAREHOUSE_DB: "warehouse"
+  SCRAPE_INTERVAL_SECONDS: "3600"
+  SCRAPE_MAX_ARTICLES_PER_FEED: "15"
+  SCRAPE_FETCH_CONTENT: "true"
+  DQ_MIN_CONTENT_CHARS: "100"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: platform-secrets
+  namespace: newslake-processing
+type: Opaque
+stringData:
+  MINIO_ROOT_USER: minio
+  MINIO_ROOT_PASSWORD: minio12345
+  WAREHOUSE_USER: warehouse
+  WAREHOUSE_PASSWORD: warehouse
+---
+# ---------- Scraper (Deployment) ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scraper
+  namespace: newslake-processing
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: scraper } }
+  template:
+    metadata: { labels: { app: scraper } }
+    spec:
+      containers:
+        - name: scraper
+          image: REGISTRY/newslake-scraper:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: platform-config }
+            - secretRef:    { name: platform-secrets }
+---
+# ---------- Bronze/Silver consumer ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bronze-silver
+  namespace: newslake-processing
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: bronze-silver } }
+  template:
+    metadata: { labels: { app: bronze-silver } }
+    spec:
+      containers:
+        - name: processor
+          image: REGISTRY/newslake-transformer:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "process_bronze_silver.py"]
+          envFrom:
+            - configMapRef: { name: platform-config }
+            - secretRef:    { name: platform-secrets }

@@ -1,0 +1,314 @@
+version: "3.9"
+
+# =============================================================
+# News Big Data Platform - Core Infrastructure
+# Streaming (Kafka), Data Lake (MinIO), Warehouse (Postgres),
+# Orchestration (Airflow), BI (Metabase)
+# =============================================================
+
+networks:
+  newslake:
+    driver: bridge
+    name: newslake_net
+
+volumes:
+  minio-data:
+  warehouse-data:
+  airflow-db-data:
+  airflow-logs:
+  airflow-dags:
+  airflow-plugins:
+  metabase-data:
+  kafka-data:
+  zookeeper-data:
+  zookeeper-log:
+
+# --------- Reusable Airflow base config ----------
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.9.3-python3.11
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db:5432/airflow
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "True"
+    AIRFLOW__WEBSERVER__SECRET_KEY: "change-me-in-prod"
+    AIRFLOW__CORE__FERNET_KEY: "ZmJsaXNzZnJhbWV3b3JrZmVybmV0a2V5MTIzNDU2Nzg="
+    PYTHONPATH: "/opt/airflow:/opt/airflow/dags:/opt/airflow/jobs"
+    # Pass data-platform connectivity to DAGs
+    MINIO_ENDPOINT: http://minio:9000
+    MINIO_ROOT_USER: minio
+    MINIO_ROOT_PASSWORD: minio12345
+    MINIO_BUCKET: newslake
+    KAFKA_BOOTSTRAP: kafka:9092
+    KAFKA_TOPIC_ARTICLES: raw_articles
+    WAREHOUSE_HOST: warehouse
+    WAREHOUSE_PORT: "5432"
+    WAREHOUSE_USER: warehouse
+    WAREHOUSE_PASSWORD: warehouse
+    WAREHOUSE_DB: warehouse
+    # NOTE: do NOT pin sqlalchemy here — Airflow 2.9 requires 1.4.x and
+    # pinning 2.0 breaks the Airflow metadata ORM. The gold loader uses
+    # create_engine(future=True) + text(), which work on both 1.4 and 2.x.
+    _PIP_ADDITIONAL_REQUIREMENTS: >-
+      minio==7.2.7 kafka-python==2.0.2 psycopg2-binary==2.9.9
+      pandas==2.2.2 pyarrow==16.1.0 beautifulsoup4==4.12.3 lxml==5.2.2
+      langdetect==1.0.9 python-dateutil==2.9.0.post0
+      tenacity==8.5.0 requests==2.32.3
+  volumes:
+    - airflow-logs:/opt/airflow/logs
+    - airflow-plugins:/opt/airflow/plugins
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/jobs:/opt/airflow/jobs
+    - ./scraper:/opt/airflow/jobs/scraper
+    - ./transformer:/opt/airflow/jobs/transformer
+  networks: [newslake]
+  depends_on:
+    airflow-db:
+      condition: service_healthy
+
+services:
+
+  # ============ DATA LAKE (S3-compatible) ============
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [newslake]
+
+  minio-init:
+    image: minio/mc:RELEASE.2024-10-08T09-37-26Z
+    container_name: minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minio minio12345 &&
+      mc mb -p local/newslake/bronze || true &&
+      mc mb -p local/newslake/silver || true &&
+      mc mb -p local/newslake/gold   || true &&
+      echo '[init] MinIO medallion buckets ready' &&
+      exit 0;
+      "
+    networks: [newslake]
+
+  # ============ STREAMING BROKER ============
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    healthcheck:
+      # cp-zookeeper restricts 4lw commands and lacks `nc` -> use a simple TCP probe
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/localhost/2181'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [newslake]
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"      # internal listener (containers)
+      - "29092:29092"    # host listener
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+    restart: unless-stopped
+    networks: [newslake]
+
+  # ============ DATA WAREHOUSE ============
+  warehouse:
+    image: postgres:16-alpine
+    container_name: warehouse
+    environment:
+      POSTGRES_USER: warehouse
+      POSTGRES_PASSWORD: warehouse
+      POSTGRES_DB: warehouse
+    ports:
+      - "5432:5432"
+    volumes:
+      - warehouse-data:/var/lib/postgresql/data
+      - ./init/init_warehouse.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warehouse -d warehouse"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [newslake]
+
+  # ============ AIRFLOW METADATA DB ============
+  airflow-db:
+    image: postgres:16-alpine
+    container_name: airflow-db
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [newslake]
+
+  # ============ AIRFLOW INIT (db migrate + create user) ============
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -e
+        airflow db migrate
+        airflow users create \
+          --username admin --password admin \
+          --firstname Admin --lastname User \
+          --role Admin --email admin@example.com || true
+        echo "[init] Airflow ready"
+    restart: "no"
+
+  # ============ AIRFLOW WEBSERVER ============
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver
+    ports:
+      - "8080:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  # ============ AIRFLOW SCHEDULER ============
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $${HOSTNAME} || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  # ============ STREAMING INGESTION : Scraper -> Kafka ============
+  scraper:
+    build: ./scraper
+    container_name: scraper
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC_ARTICLES: raw_articles
+      SCRAPE_INTERVAL_SECONDS: "3600"
+      SCRAPE_MAX_ARTICLES_PER_FEED: "10"
+      SCRAPE_FETCH_CONTENT: "true"
+    restart: unless-stopped
+    networks: [newslake]
+
+  # ============ STREAMING : Kafka -> Bronze (DQ) -> Silver ============
+  bronze-silver:
+    build: ./transformer
+    container_name: bronze-silver
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC_ARTICLES: raw_articles
+      KAFKA_CONSUMER_GROUP: bronze-silver-processor
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+      MINIO_BUCKET: newslake
+      DQ_MIN_CONTENT_CHARS: "100"
+    restart: unless-stopped
+    networks: [newslake]
+
+  # ============ VISUALIZATION (Metabase) ============
+  metabase:
+    image: metabase/metabase:v0.50.20
+    container_name: metabase
+    ports:
+      - "3000:3000"
+    environment:
+      MB_DB_FILE: /metabase-data/metabase.db
+      JAVA_TIMEZONE: UTC
+    volumes:
+      - metabase-data:/metabase-data
+    depends_on:
+      warehouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+    networks: [newslake]

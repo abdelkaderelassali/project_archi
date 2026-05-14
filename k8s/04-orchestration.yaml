@@ -1,0 +1,74 @@
+# =============================================================
+# Layer: ORCHESTRATION  (Airflow standalone — single pod)
+# Namespace: newslake-orchestration
+# For HA, switch to the official Apache Airflow Helm chart with CeleryExecutor.
+# =============================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: airflow-data
+  namespace: newslake-orchestration
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: { storage: 5Gi }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airflow-env
+  namespace: newslake-orchestration
+data:
+  AIRFLOW__CORE__EXECUTOR: "LocalExecutor"
+  AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"
+  KAFKA_BOOTSTRAP: "kafka.newslake-streaming.svc.cluster.local:9092"
+  KAFKA_TOPIC_ARTICLES: "raw_articles"
+  MINIO_ENDPOINT: "http://minio.newslake-storage.svc.cluster.local:9000"
+  MINIO_BUCKET: "newslake"
+  WAREHOUSE_HOST: "warehouse.newslake-storage.svc.cluster.local"
+  WAREHOUSE_PORT: "5432"
+  WAREHOUSE_DB: "warehouse"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow
+  namespace: newslake-orchestration
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: airflow } }
+  template:
+    metadata: { labels: { app: airflow } }
+    spec:
+      containers:
+        - name: airflow
+          image: apache/airflow:2.9.3-python3.11
+          command: ["bash", "-lc", "airflow standalone"]
+          envFrom:
+            - configMapRef: { name: airflow-env }
+          env:
+            - { name: WAREHOUSE_USER, value: warehouse }
+            - { name: WAREHOUSE_PASSWORD, value: warehouse }
+            - { name: MINIO_ROOT_USER, value: minio }
+            - { name: MINIO_ROOT_PASSWORD, value: minio12345 }
+            - name: _PIP_ADDITIONAL_REQUIREMENTS
+              value: >-
+                minio==7.2.7 kafka-python==2.0.2 psycopg2-binary==2.9.9
+                pandas==2.2.2 pyarrow==16.1.0 beautifulsoup4==4.12.3 lxml==5.2.2
+                langdetect==1.0.9 sqlalchemy==2.0.30 tenacity==8.5.0 requests==2.32.3
+          ports: [{ containerPort: 8080 }]
+          volumeMounts:
+            - { name: data, mountPath: /opt/airflow }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: airflow-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow
+  namespace: newslake-orchestration
+spec:
+  selector: { app: airflow }
+  ports: [{ port: 8080, targetPort: 8080 }]
