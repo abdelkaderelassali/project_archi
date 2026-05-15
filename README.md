@@ -4,7 +4,7 @@
 
 ---
 
-## 1. Project description
+## 1. Project description & Goals (Explication du Projet)
 
 Media outlets publish thousands of articles every day. This platform exploits that stream to:
 
@@ -13,6 +13,13 @@ Media outlets publish thousands of articles every day. This platform exploits th
 - follow **events in near real-time**,
 - give analysts a foundation for **fake-news detection**.
 
+### 1.1. The Problem it Solves (La Problématique)
+À l'ère de l'information, le volume d'articles de presse rend l'analyse manuelle impossible. Les journalistes, analystes et entreprises ont besoin de moyens automatisés pour agréger les actualités, filtrer le bruit et détecter les tendances et thèmes sous-jacents à travers différents médias.
+
+### 1.2. The Solution (La Solution : NewsLake)
+NewsLake est une pipeline de Data Engineering automatisée qui ingère en continu des articles de presse provenant de diverses sources (par exemple, Hespress pour le Maroc et la BBC pour l'international). La plateforme standardise ces données non structurées, les nettoie et les transforme en formats analytiques structurés. En adoptant une **Architecture Medallion** (Bronze, Silver, Gold), la plateforme garantit la qualité et la traçabilité des données à chaque étape, aboutissant à des données prêtes pour le métier et exposées via des tableaux de bord interactifs.
+
+### 1.3. Functional Coverage
 It implements every functional layer required by the project brief:
 
 | Brief requirement | NewsLake component |
@@ -83,7 +90,9 @@ It implements every functional layer required by the project brief:
 
 ---
 
-## 3. Technology stack
+## 3. Technology stack & Choices
+
+### 3.1. Technology Stack
 
 | Layer | Technology | Version |
 |---|---|---|
@@ -102,6 +111,19 @@ It implements every functional layer required by the project brief:
 | Exporters | node-exporter, cAdvisor, kafka-exporter, postgres-exporter | latest |
 | Containerisation | Docker + Docker Compose v2 | — |
 | Orchestration (optional) | Kubernetes (plain manifests) | 1.28+ |
+
+### 3.2. Justification of Technical Choices (Explication des Choix Techniques)
+
+Chaque outil de cette architecture a été choisi pour équilibrer la scalabilité, la maintenabilité et les standards de l'industrie :
+
+*   **Apache Kafka (Message Broker) :** Choisi pour son haut débit et sa tolérance aux pannes. Kafka découple la couche d'extraction (Scraping) de la couche de traitement (Consommation). Il agit comme un tampon : si le Data Lake est temporairement indisponible, les messages sont mis en file d'attente sans perte de données.
+*   **MinIO (Data Lake) :** Utilisé pour stocker les fichiers bruts et nettoyés (JSON/Parquet). MinIO a été choisi car il est 100% compatible avec Amazon S3, léger à déployer via Docker/K8s, et très scalable. Il permet d'implémenter facilement les couches Bronze et Silver.
+*   **Architecture Medallion (Bronze, Silver, Gold) :** Adoptée pour garantir la qualité et le lignage des données. La couche *Bronze* conserve les données dans leur état brut pour l'audit. La couche *Silver* les nettoie (filtrage, standardisation). La couche *Gold* les agrège pour l'analyse décisionnelle (fichiers Parquet).
+*   **PostgreSQL (Data Warehouse) :** Bien que les bases de données orientées colonnes soient typiques pour les immenses Data Warehouses, Postgres a été retenu pour sa simplicité, sa fiabilité et son intégration parfaite avec Metabase, ce qui est idéal pour l'échelle de ce projet.
+*   **Apache Airflow (Orchestration) :** Préféré aux simples tâches cron pour sa robustesse, sa gestion des dépendances, ses mécanismes de relance (retry) et son interface visuelle. Il orchestre de manière fiable les transformations batch (Silver vers Gold) et le chargement du DWH.
+*   **Metabase (BI & Visualisation) :** Sélectionné pour son interface intuitive permettant de créer rapidement des tableaux de bord (Dashboards), tout en supportant les requêtes SQL complexes.
+*   **Docker & Kubernetes (Conteneurisation) :** Permet de déployer l'ensemble de la stack (Kafka, Airflow, MinIO, etc.) de manière uniforme sur n'importe quel environnement avec une seule commande (`docker-compose up`), évitant ainsi les problèmes de compatibilité.
+*   **Python & BeautifulSoup4 (Scraping) :** Python est le standard en Data Engineering. BS4 associé aux flux RSS offre une méthode légère et résiliente pour extraire le texte des articles sans la lourdeur d'un navigateur headless.
 
 ---
 

@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $base  = "http://localhost:3000/api"
 $email = "abdoelassali66@gmail.com"
 $pass  = "Abdo123456789@"
-$dbName = "Projet 4IADC"
+$dbName = "Warehouse"
 
 # 1) Login
 Write-Host "[1/6] Logging in..."
@@ -18,7 +18,7 @@ Write-Host "[2/6] Looking up database '$dbName'..."
 $dbs = Invoke-RestMethod -Method Get -Uri "$base/database" -Headers $headers
 $db = $dbs.data | Where-Object { $_.name -eq $dbName }
 if (-not $db) { throw "Database '$dbName' not found in Metabase" }
-$dbId = $db.id
+$dbId = $db[-1].id
 Write-Host "      database id = $dbId"
 
 # 3) Trigger sync + rescan

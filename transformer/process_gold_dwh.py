@@ -299,9 +299,12 @@ def truncate_and_load(engine: Engine, table: str, df: pd.DataFrame) -> None:
     with engine.begin() as conn:
         conn.execute(text(f"TRUNCATE TABLE gold.{table}"))
         if not df.empty:
-            df.to_sql(table, conn, schema="gold",
-                      if_exists="append", index=False, method="multi",
-                      chunksize=1000)
+            cols = list(df.columns)
+            placeholders = ", ".join([f":{c}" for c in cols])
+            insert_sql = text(f"INSERT INTO gold.{table} ({', '.join(cols)}) VALUES ({placeholders})")
+            df_clean = df.where(pd.notnull(df), None)
+            records = df_clean.to_dict(orient="records")
+            conn.execute(insert_sql, records)
     log.info("warehouse %-25s loaded %d rows", f"gold.{table}", len(df))
 
 
@@ -311,11 +314,17 @@ def upsert_articles(engine: Engine, df: pd.DataFrame) -> None:
         log.info("warehouse gold.articles : no rows to upsert")
         return
     with engine.begin() as conn:
-        conn.execute(text("CREATE TEMP TABLE _stage_articles "
-                          "(LIKE gold.articles INCLUDING DEFAULTS) "
-                          "ON COMMIT DROP"))
-        df.to_sql("_stage_articles", conn, if_exists="append",
-                  index=False, method="multi", chunksize=1000)
+        conn.execute(text("DROP TABLE IF EXISTS _stage_articles"))
+        conn.execute(text("CREATE TABLE _stage_articles "
+                          "(LIKE gold.articles INCLUDING DEFAULTS)"))
+        
+        cols = list(df.columns)
+        placeholders = ", ".join([f":{c}" for c in cols])
+        insert_sql = text(f"INSERT INTO _stage_articles ({', '.join(cols)}) VALUES ({placeholders})")
+        df_clean = df.where(pd.notnull(df), None)
+        records = df_clean.to_dict(orient="records")
+        conn.execute(insert_sql, records)
+        
         conn.execute(text("""
             INSERT INTO gold.articles
                 (id, title, author, published_at, category, source, url,
@@ -335,6 +344,7 @@ def upsert_articles(engine: Engine, df: pd.DataFrame) -> None:
                 word_count    = EXCLUDED.word_count,
                 ingested_at   = NOW();
         """))
+        conn.execute(text("DROP TABLE _stage_articles"))
     log.info("warehouse gold.articles    upserted %d rows", len(df))
 
 
